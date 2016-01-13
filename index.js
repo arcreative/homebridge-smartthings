@@ -15,9 +15,10 @@ module.exports = function(homebridge) {
 }
 
 function SmartThingsPlatform(log, config){
-  this.log          = log;
-  this.app_id       = config["app_id"];
-  this.access_token = config["access_token"];
+  this.log                = log;
+  this.app_id             = config["app_id"];
+  this.access_token       = config["access_token"];
+  this.temperature_scale  = null;
 }
 
 SmartThingsPlatform.prototype = {
@@ -34,6 +35,7 @@ SmartThingsPlatform.prototype = {
       if (err || response.statusCode != 200) {
         that.log("Error starting StartThings: " + err);
       } else {
+        that.temperature_scale = Characteristic.TemperatureDisplayUnits[location.temperature_scale === 'F' ? 'FAHRENHEIT' : 'CELSIUS'];
         request.get({
           url: "https://graph.api.smartthings.com/api/smartapps/installations/"+that.app_id+"/devices?access_token="+that.access_token,
           json: true
@@ -44,7 +46,7 @@ SmartThingsPlatform.prototype = {
             ['switches', 'hues', 'thermostats'].forEach(function(key) {
               if (json[key]) {
                 json[key].forEach(function(thing) {
-                  var accessory = new SmartThingsAccessory(that.log, location, thing.name, thing.commands, thing.attributes);
+                  var accessory = new SmartThingsAccessory(that.log, location, thing.name, thing.commands, thing.attributes, that);
                   foundAccessories.push(accessory);
                 });
               }
@@ -58,12 +60,13 @@ SmartThingsPlatform.prototype = {
   }
 }
 
-function SmartThingsAccessory(log, location, name, commands, attributes) {
+function SmartThingsAccessory(log, location, name, commands, attributes, platform) {
   this.log        = log;
   this.location   = location;
   this.name       = name;
   this.commands   = commands;
   this.attributes = attributes;
+  this.platform   = platform;
 }
 
 SmartThingsAccessory.prototype.getServices = function() {
@@ -171,7 +174,8 @@ SmartThingsAccessory.prototype.getSaturation = function(cb) {
 }
 
 SmartThingsAccessory.prototype.getCurrentTemperature = function(cb) {
-  this.currentValue("temperature", cb);
+  var that = this;
+  this.currentTemperatureValue("temperature", cb);
 }
 
 SmartThingsAccessory.prototype.getTargetTemperature = function(cb) {
@@ -180,9 +184,9 @@ SmartThingsAccessory.prototype.getTargetTemperature = function(cb) {
     if (err) {
       if (cb) cb(err);
     } else if (mode == Characteristic.TargetHeatingCoolingState.COOL) {
-      that.currentValue("coolingSetpoint", cb);
+      that.currentTemperatureValue("coolingSetpoint", cb);
     } else if (mode == Characteristic.TargetHeatingCoolingState.HEAT) {
-      that.currentValue("heatingSetpoint", cb);
+      that.currentTemperatureValue("heatingSetpoint", cb);
     } else if (mode == Characteristic.TargetHeatingCoolingState.AUTO) {
       // TODO
       if (cb) cb("unimplemented");
@@ -198,9 +202,9 @@ SmartThingsAccessory.prototype.setTargetTemperature = function(value, cb) {
     if (err) {
       if (cb) cb(err);
     } else if (mode == Characteristic.TargetHeatingCoolingState.COOL) {
-      that.command("setCoolingSetpoint", value, cb);
+      that.temperatureCommand("setCoolingSetpoint", value, cb);
     } else if (mode == Characteristic.TargetHeatingCoolingState.HEAT) {
-      that.command("setHeatingSetpoint", value, cb);
+      that.temperatureCommand("setHeatingSetpoint", value, cb);
     } else if (mode == Characteristic.TargetHeatingCoolingState.AUTO) {
       // TODO
       if (cb) cb("unimplemented");
@@ -260,8 +264,7 @@ SmartThingsAccessory.prototype.setTargetHeatingCoolingState = function(value, cb
 }
 
 SmartThingsAccessory.prototype.getTemperatureDisplayUnits = function(cb) {
-  // TODO
-  if (cb) cb(null, Characteristic.TemperatureDisplayUnits.FAHRENHEIT);
+  if (cb) cb(null, this.platform.temperature_scale);
 }
 
 SmartThingsAccessory.prototype.command = function(command, value, cb) {
@@ -293,7 +296,15 @@ SmartThingsAccessory.prototype.command = function(command, value, cb) {
   });
 }
 
+SmartThingsAccessory.prototype.temperatureCommand = function(command, value, cb) {
+  if (value && this.platform.temperature_scale === Characteristic.TemperatureDisplayUnits.FAHRENHEIT) {
+    value = toFahrenheit(value);
+  }
+  this.command(command, value, cb);
+}
+
 SmartThingsAccessory.prototype.currentValue = function(attribute, cb) {
+  var that = this;
   var url = this.attributes[attribute];
   request.get({
     url: url
@@ -310,4 +321,21 @@ SmartThingsAccessory.prototype.currentValue = function(attribute, cb) {
       }
     }
   });
+}
+
+SmartThingsAccessory.prototype.currentTemperatureValue = function(attribute, cb) {
+  var that = this;
+  this.currentValue(attribute, function(err, val) {
+    if (val && that.platform.temperature_scale === Characteristic.TemperatureDisplayUnits.FAHRENHEIT) {
+      val = toCelsius(val);
+    }
+    if (cb) cb(err, val);
+  });
+}
+
+function toCelsius(temperature) {
+  return Number(((temperature - 32) / 1.8).toFixed(1));
+}
+function toFahrenheit(temperature) {
+  return Math.round(temperature * 1.8 + 32);
 }
